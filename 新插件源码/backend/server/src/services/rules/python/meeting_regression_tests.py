@@ -339,7 +339,8 @@ def main() -> int:
         ("发票缺失但页面金额存在时规则8跳过", base_context(invoice_amount=None, include_invoice=False, page_venue=6000), "meeting_rule_08", "skipped", {"must_contain": ["missingInvoiceAmount"]}),
         ("发票汇总金额超定额触发规则8", base_context(attendance=10, invoice_amount=6000), "meeting_rule_08", "warning", {"must_contain": ["summary.invoiceTotalAmount"]}),
         ("发票汇总金额未超定额不触发规则8", base_context(attendance=10, invoice_amount=5000), "meeting_rule_08", "pass", {}),
-        ("四类会议分项标准缺失时规则9跳过", base_context(category="四类会议"), "meeting_rule_09", "skipped", {}),
+        ("四类会议分项标准未超标时规则9通过", base_context(category="四类会议"), "meeting_rule_09", "pass", {}),
+        ("四类会议住宿费超分项标准触发规则9", base_context(category="四类会议", page_accommodation=7000), "meeting_rule_09", "warning", {"must_contain": ["四类会议住宿费"]}),
         ("自然人收款且无公务卡信息触发规则2", base_context(payments=[{"payeeName": "张三", "cardAmount": 0, "cardConsumeTime": ""}]), "meeting_rule_02", "warning", {"must_contain": ["张三"]}),
         ("单位收款人不按自然人提示", base_context(payments=[{"payeeName": "测试服务有限公司", "cardAmount": 0, "cardConsumeTime": ""}]), "meeting_rule_02", "pass", {}),
     ])

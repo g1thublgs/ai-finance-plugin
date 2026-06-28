@@ -13,13 +13,12 @@ RULE_META = {
 STANDARDS = {
     "二类会议": {"mealAmount": Decimal("150"), "accommodationAmount": Decimal("400")},
     "三类会议": {"mealAmount": Decimal("130"), "accommodationAmount": Decimal("340")},
+    "四类会议": {"mealAmount": Decimal("130"), "accommodationAmount": Decimal("340")},
 }
 
 
 def evaluate(context):
     category, reason, category_evidence = determine_meeting_category(context)
-    if category == "四类会议":
-        return skipped(RULE_META, "第一轮暂未配置四类会议伙食费、住宿费标准，待补充口径。", {"meetingCategory": category, "categoryReason": reason})
     if not has_page_expense(context):
         return skipped(RULE_META, "未读取到页面会议费报销字段，伙食费/住宿费标准规则需人工复核。", {})
     page = get_page_expense(context)
@@ -28,7 +27,15 @@ def evaluate(context):
     if days <= 0 or people <= 0:
         return skipped(RULE_META, "页面天数或人数缺失/为 0，伙食费/住宿费标准规则需人工复核。", {"days": str(days), "peopleCount": str(people)})
 
-    standards = STANDARDS[category]
+    standards = STANDARDS.get(category)
+    if not standards:
+        return result(RULE_META, [issue(
+            RULE_META["category"],
+            f"{category or '未识别会议类别'}伙食费、住宿费分项标准未配置。",
+            "请补充会议类别对应的伙食费、住宿费标准后人工复核。",
+            evidence={"meetingCategory": category, "categoryReason": reason, **category_evidence},
+        )], None)
+
     issues = []
     meal = to_decimal(page.get("mealAmount"))
     meal_limit = days * people * standards["mealAmount"]
