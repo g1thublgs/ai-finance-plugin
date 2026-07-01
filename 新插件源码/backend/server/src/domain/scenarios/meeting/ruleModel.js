@@ -29,6 +29,6 @@ module.exports = {
         requiredFields,
         pythonFile: `${code}.py`,
         sourceRuleNo: String(index + 1),
-        implementationStatus: ['rule_05', 'rule_06', 'rule_10'].includes(code) ? 'partial' : 'implemented-first-round',
+        implementationStatus: ['rule_02', 'rule_05', 'rule_06', 'rule_09', 'rule_10'].includes(code) ? 'partial' : 'implemented-first-round',
     })),
 };
