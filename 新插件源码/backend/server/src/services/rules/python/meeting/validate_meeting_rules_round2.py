@@ -42,6 +42,40 @@ def normalize_markdown_text(text):
     return clean_hidden_unicode(text).replace('\r\n', '\n').replace('\r', '\n')
 
 
+def validate_markdown_shape(text):
+    lines = text.split('\n')
+    required_single_lines = [
+        '# 会议费审核第二轮测试验证报告',
+        '## 1. 测试结论',
+        '## 2. 测试环境',
+        '## 3. 执行命令和结果',
+        '## 4. 14 条规则逐条测试表',
+        '| 命令 | 工作目录 | 结果 | 摘要 |',
+        '|---|---|---|---|',
+        '| 类型 | 输入样例摘要 | 预期结果 | 实际结果 | 是否通过 |',
+        '|---|---|---|---|---|',
+    ]
+    for expected in required_single_lines:
+        if expected not in lines:
+            raise ValueError(f'报告 Markdown 缺少独立行：{expected}')
+    for rule_no in range(1, 15):
+        expected = f'### rule_{rule_no:02d}'
+        if expected not in lines:
+            raise ValueError(f'报告 Markdown 缺少独立规则标题行：{expected}')
+    collapsed_patterns = [
+        '# 会议费审核第二轮测试验证报告 ## 1. 测试结论',
+        '## 4. 14 条规则逐条测试表 ### rule_01',
+        '### rule_01 | 类型 | 输入样例摘要',
+    ]
+    for line_no, line in enumerate(lines, 1):
+        for pattern in collapsed_patterns:
+            if pattern in line:
+                raise ValueError(f'报告 Markdown 第 {line_no} 行存在拼接内容：{pattern}')
+    problem_lines = [line for line in lines if line.startswith('| P')]
+    if len(problem_lines) != 17:
+        raise ValueError(f'报告问题清单数量异常：{len(problem_lines)}')
+
+
 def ctx(summary=None, ocr_items=None, evidence=None):
     return {
         'summary': summary or {},
@@ -432,7 +466,9 @@ def build_report(results, command_results):
     lines.append('')
     lines.append('- 建议进入第三轮定点修复。修复范围建议严格限定在会议费规则字段读取、冲突证据、中文金额解析和提示文案补强，不触碰其他场景和公共框架。')
     lines.append('')
-    return normalize_markdown_text('\n'.join(lines)).rstrip('\n') + '\n'
+    report = normalize_markdown_text('\n'.join(lines)).rstrip('\n') + '\n'
+    validate_markdown_shape(report)
+    return report
 
 
 def main():
