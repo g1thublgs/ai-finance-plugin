@@ -13,6 +13,16 @@ def to_text(value):
     return str(value).strip()
 
 
+def has_meaningful_value(value):
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (dict, list)):
+        return bool(value)
+    return True
+
+
 def normalize_text(value):
     return re.sub(r'\s+', '', to_text(value))
 
@@ -51,6 +61,78 @@ def to_number(value, default=0):
         return default
 
 
+CN_DIGITS = {
+    '零': 0, '〇': 0, '○': 0, '一': 1, '二': 2, '两': 2, '三': 3, '四': 4,
+    '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '壹': 1, '贰': 2,
+    '貳': 2, '叁': 3, '參': 3, '肆': 4, '伍': 5, '陆': 6, '陸': 6,
+    '柒': 7, '捌': 8, '玖': 9,
+}
+CN_UNITS = {'十': 10, '拾': 10, '百': 100, '佰': 100, '千': 1000, '仟': 1000}
+CN_BIG_UNITS = {'万': 10000, '萬': 10000, '亿': 100000000, '億': 100000000}
+
+
+def parse_chinese_integer(text):
+    text = normalize_text(text)
+    if not text:
+        return None
+    total = 0
+    section = 0
+    number = 0
+    seen = False
+    for ch in text:
+        if ch in CN_DIGITS:
+            number = CN_DIGITS[ch]
+            seen = True
+        elif ch in CN_UNITS:
+            unit = CN_UNITS[ch]
+            if number == 0:
+                number = 1
+            section += number * unit
+            number = 0
+            seen = True
+        elif ch in CN_BIG_UNITS:
+            unit = CN_BIG_UNITS[ch]
+            section += number
+            if section == 0:
+                section = 1
+            total += section * unit
+            section = 0
+            number = 0
+            seen = True
+        else:
+            return None
+    if not seen:
+        return None
+    return total + section + number
+
+
+def parse_chinese_amount(value):
+    text = normalize_text(value)
+    if not text:
+        return None
+    text = text.replace('人民币', '').replace('金额', '').replace('大写', '')
+    text = text.replace('圆', '元').replace('正', '整')
+    allowed = ''.join(CN_DIGITS.keys()) + ''.join(CN_UNITS.keys()) + ''.join(CN_BIG_UNITS.keys())
+    match = re.search(f'([{re.escape(allowed)}]+)元(?:整)?(?:(零|[{re.escape(allowed)}]+)角)?(?:(零|[{re.escape(allowed)}]+)分)?', text)
+    if not match:
+        return None
+    integer = parse_chinese_integer(match.group(1))
+    if integer is None:
+        return None
+    amount = float(integer)
+    if match.group(2) and match.group(2) != '零':
+        jiao = parse_chinese_integer(match.group(2))
+        if jiao is None:
+            return None
+        amount += jiao / 10
+    if match.group(3) and match.group(3) != '零':
+        fen = parse_chinese_integer(match.group(3))
+        if fen is None:
+            return None
+        amount += fen / 100
+    return amount
+
+
 def parse_amount(value):
     if value in (None, ''):
         return None
@@ -60,7 +142,7 @@ def parse_amount(value):
     text = text.replace('人民币', '').replace('元', '').replace('圆', '')
     match = re.search(r'-?\d+(?:\.\d+)?', text)
     if not match:
-        return None
+        return parse_chinese_amount(value)
     try:
         return float(match.group(0))
     except Exception:
@@ -266,6 +348,8 @@ def all_text(data, doc_types=None):
         chunks.append(to_text(item.get('rawText')))
         chunks.append(to_text(item.get('meetingName')))
         chunks.append(to_text(item.get('location')))
+        chunks.append(to_text(item.get('attendeeScope')))
+        chunks.append(to_text(item.get('organizer')))
         for key in ['itemsDetail', 'details', 'detailRows']:
             rows = item.get(key) or []
             if isinstance(rows, list):
@@ -282,7 +366,7 @@ def text_sources(data, doc_types=None):
         if wanted and dtype not in wanted:
             continue
         file_name = to_text(item.get('sourceFileName') or item.get('fileName'))
-        chunks = [item.get('rawText'), item.get('meetingName'), item.get('location'), item.get('sellerName'), item.get('payeeName')]
+        chunks = [item.get('rawText'), item.get('meetingName'), item.get('location'), item.get('attendeeScope'), item.get('organizer'), item.get('sellerName'), item.get('payeeName')]
         for key in ['itemsDetail', 'details', 'detailRows']:
             rows = item.get(key) or []
             if isinstance(rows, list):
@@ -322,6 +406,273 @@ def keyword_hits(data, keywords, doc_types=None, exclude_contexts=None):
     return hits
 
 
+PAGE_TEXT_FIELDS = [
+    'expenseDetail', 'feeDetail', 'settlementDetail', 'accommodationRemark',
+    'accommodationDetail', 'remark', 'reason', 'description', 'meetingReason',
+    'settlementRemark', 'feeDescription', 'BZ', 'SQ_SY', 'QTFY',
+]
+
+
+def _source_entry(value, source, field='', source_group='page', doc_type_name='', file_name='', raw_text=''):
+    return {
+        'value': value,
+        'text': to_text(value),
+        'source': source,
+        'field': field,
+        'sourceGroup': source_group,
+        'docType': doc_type_name,
+        'fileName': to_text(file_name),
+        'rawText': to_text(raw_text)[:200],
+    }
+
+
+def _append_value_source(sources, value, source, field='', source_group='page', doc_type_name='', file_name='', raw_text=''):
+    if has_meaningful_value(value):
+        sources.append(_source_entry(value, source, field, source_group, doc_type_name, file_name, raw_text))
+
+
+def collect_text_sources(context, purpose=None):
+    sources = []
+    s = summary(context)
+    page = get_page_fields(context)
+    fields = list(PAGE_TEXT_FIELDS)
+    if purpose == 'accommodation':
+        fields = ['accommodationDetail', 'accommodationRemark', 'expenseDetail', 'feeDetail', 'settlementDetail', 'remark', 'description', 'BZ', 'QTFY']
+    for field in fields:
+        _append_value_source(sources, s.get(field), f'summary.{field}', field)
+        _append_value_source(sources, page.get(field), f'summary.pageFields.{field}', field)
+    for idx, item in enumerate(ocr_items(context)):
+        dtype = doc_type(item)
+        file_name = item.get('sourceFileName') or item.get('fileName')
+        raw = item.get('rawText')
+        chunks = [raw, item.get('meetingName'), item.get('location'), item.get('sellerName'), item.get('payeeName')]
+        _append_value_source(sources, '\n'.join(to_text(part) for part in chunks if to_text(part)), f'ocrItems[{idx}].rawText', 'rawText', 'ocr', dtype, file_name, raw)
+        for key in ['itemsDetail', 'details', 'detailRows']:
+            rows = item.get(key) or []
+            if isinstance(rows, list):
+                for row_idx, row in enumerate(rows):
+                    if isinstance(row, dict):
+                        for field in ['name', 'description', 'itemName', 'feeName']:
+                            _append_value_source(sources, row.get(field), f'ocrItems[{idx}].{key}[{row_idx}].{field}', field, 'ocr', dtype, file_name, raw)
+                    else:
+                        _append_value_source(sources, row, f'ocrItems[{idx}].{key}[{row_idx}]', key, 'ocr', dtype, file_name, raw)
+    return sources
+
+
+def keyword_hits_from_sources(sources, keywords, exclude_contexts=None):
+    hits = []
+    seen = set()
+    excludes = [normalize_text(item) for item in (exclude_contexts or [])]
+    for source in sources or []:
+        text = to_text(source.get('text') or source.get('value'))
+        compact = normalize_text(text)
+        if not compact:
+            continue
+        for kw in keywords:
+            nkw = normalize_text(kw)
+            if not nkw or nkw not in compact:
+                continue
+            pos = compact.find(nkw)
+            context = text[:120] if pos < 0 else text[max(0, pos - 30):pos + len(kw) + 30]
+            if any(ex in normalize_text(context) for ex in excludes):
+                continue
+            key = (source.get('source'), kw, normalize_text(context))
+            if key in seen:
+                continue
+            seen.add(key)
+            hits.append({
+                'keyword': kw,
+                'context': context,
+                'source': source.get('source'),
+                'sourceGroup': source.get('sourceGroup'),
+                'docType': source.get('docType'),
+                'fileName': source.get('fileName'),
+            })
+    return hits
+
+
+def collect_location_sources(context):
+    sources = []
+    s = summary(context)
+    page = get_page_fields(context)
+    for field in ['meetingLocation', 'location']:
+        _append_value_source(sources, s.get(field), f'summary.{field}', field)
+        _append_value_source(sources, page.get(field), f'summary.pageFields.{field}', field)
+    for idx, item in enumerate(ocr_items(context)):
+        dtype = doc_type(item)
+        if dtype and dtype not in ('meetingNotice', 'meetingPlan', 'meetingApproval', 'other'):
+            continue
+        file_name = item.get('sourceFileName') or item.get('fileName')
+        raw = item.get('rawText')
+        for field in ['location', 'meetingLocation', 'address']:
+            _append_value_source(sources, item.get(field), f'ocrItems[{idx}].{field}', field, 'ocr', dtype, file_name, raw)
+        raw_text = to_text(raw)
+        if raw_text:
+            match = re.search(r'(?:会议地点|地点|会场)[:：\s]*([^\n。；;，,]{2,80})', raw_text)
+            _append_value_source(sources, match.group(1) if match else raw_text, f'ocrItems[{idx}].rawText', 'rawText', 'ocr', dtype, file_name, raw)
+    return sources
+
+
+def _parse_date_source_value(value):
+    text = to_text(value)
+    if not text:
+        return (None, None, 0)
+    start, end = parse_date_range_text(text)
+    if not start:
+        start = parse_date(text)
+        end = start
+    days = len(date_range(start.isoformat(), end.isoformat())) if start and end else 0
+    return (start, end, days)
+
+
+def collect_date_sources(context):
+    sources = []
+    s = summary(context)
+    page = get_page_fields(context)
+    for root_name, root in [('summary', s), ('summary.pageFields', page)]:
+        raw_days = root.get('meetingDays') or root.get('HYTS')
+        parsed_days = parse_amount(raw_days)
+        if parsed_days is not None and parsed_days > 0:
+            sources.append({**_source_entry(raw_days, f'{root_name}.meetingDays', 'meetingDays'), 'days': parsed_days, 'startDate': None, 'endDate': None})
+        start_raw = root.get('startDate')
+        end_raw = root.get('endDate')
+        meeting_raw = root.get('meetingDate')
+        if has_meaningful_value(start_raw) or has_meaningful_value(end_raw):
+            dates = date_range(start_raw or meeting_raw, end_raw)
+            if dates:
+                sources.append({**_source_entry(f'{start_raw or ""} {end_raw or ""}'.strip(), f'{root_name}.startDate/endDate', 'dateRange'), 'days': len(dates), 'startDate': dates[0], 'endDate': dates[-1]})
+        if has_meaningful_value(meeting_raw):
+            start, end, days = _parse_date_source_value(meeting_raw)
+            if days:
+                sources.append({**_source_entry(meeting_raw, f'{root_name}.meetingDate', 'meetingDate'), 'days': days, 'startDate': start, 'endDate': end})
+    for idx, item in enumerate(ocr_items(context)):
+        dtype = doc_type(item)
+        if dtype not in ('meetingNotice', 'meetingPlan', 'meetingApproval'):
+            continue
+        file_name = item.get('sourceFileName') or item.get('fileName')
+        raw = item.get('rawText')
+        if has_meaningful_value(item.get('startDate')) or has_meaningful_value(item.get('endDate')):
+            dates = date_range(item.get('startDate') or item.get('meetingDate'), item.get('endDate'))
+            if dates:
+                sources.append({**_source_entry(f'{item.get("startDate") or ""} {item.get("endDate") or ""}'.strip(), f'ocrItems[{idx}].startDate/endDate', 'dateRange', 'ocr', dtype, file_name, raw), 'days': len(dates), 'startDate': dates[0], 'endDate': dates[-1]})
+        for field in ['meetingDate', 'rawText']:
+            start, end, days = _parse_date_source_value(item.get(field))
+            if days:
+                sources.append({**_source_entry(item.get(field), f'ocrItems[{idx}].{field}', field, 'ocr', dtype, file_name, raw), 'days': days, 'startDate': start, 'endDate': end})
+    return sources
+
+
+def collect_amount_sources(context, field_names):
+    if isinstance(field_names, str):
+        field_names = [field_names]
+    sources = []
+    s = summary(context)
+    page = get_page_fields(context)
+    for field in field_names:
+        for root_name, root in [('summary', s), ('summary.pageFields', page)]:
+            if field in root:
+                amount = parse_amount(root.get(field))
+                sources.append({**_source_entry(root.get(field), f'{root_name}.{field}', field), 'amount': amount, 'hasValue': amount is not None})
+    for idx, item in enumerate(ocr_items(context)):
+        dtype = doc_type(item)
+        file_name = item.get('sourceFileName') or item.get('fileName')
+        raw = item.get('rawText')
+        for field in field_names:
+            if field in item:
+                amount = parse_amount(item.get(field))
+                sources.append({**_source_entry(item.get(field), f'ocrItems[{idx}].{field}', field, 'ocr', dtype, file_name, raw), 'amount': amount, 'hasValue': amount is not None})
+        for row_key in ['itemsDetail', 'details', 'detailRows']:
+            rows = item.get(row_key) or []
+            if not isinstance(rows, list):
+                continue
+            for row_idx, row in enumerate(rows):
+                if not isinstance(row, dict):
+                    continue
+                name = to_text(row.get('name') or row.get('itemName') or row.get('description') or row.get('feeName'))
+                amount = parse_amount(row.get('amount') or row.get('totalAmount'))
+                if any(field in ('mealAmount', 'HSF') for field in field_names) and '伙食' in name:
+                    sources.append({**_source_entry(row.get('amount'), f'ocrItems[{idx}].{row_key}[{row_idx}]', 'mealAmount', 'ocr', dtype, file_name, raw), 'amount': amount, 'hasValue': amount is not None})
+                if any(field in ('accommodationAmount', 'ZSF') for field in field_names) and '住宿' in name:
+                    sources.append({**_source_entry(row.get('amount'), f'ocrItems[{idx}].{row_key}[{row_idx}]', 'accommodationAmount', 'ocr', dtype, file_name, raw), 'amount': amount, 'hasValue': amount is not None})
+                if any(field in ('venueRentAmount', 'venueAmount', 'CDF') for field in field_names) and ('场地' in name or '场租' in name or '租金' in name):
+                    sources.append({**_source_entry(row.get('amount'), f'ocrItems[{idx}].{row_key}[{row_idx}]', 'venueRentAmount', 'ocr', dtype, file_name, raw), 'amount': amount, 'hasValue': amount is not None})
+    return sources
+
+
+def collect_payment_sources(context):
+    sources = []
+    rows = [('summary.payments', idx, row, 'page', '', '') for idx, row in enumerate(payments(context)) if isinstance(row, dict)]
+    rows.extend(('ocrItems', idx, item, 'ocr', doc_type(item), item.get('rawText')) for idx, item in enumerate(ocr_items(context)) if doc_type(item) == 'paymentProof')
+    seen = set()
+    for root, idx, row, source_group, dtype, raw in rows:
+        payee = row.get('payee') or row.get('skrmc') or row.get('payeeName') or row.get('收款人名称')
+        card_raw = row.get('cardAmount') or row.get('BX_JE') or row.get('刷卡金额')
+        card_time = row.get('cardTime') or row.get('GWKHKSJ') or row.get('刷卡时间')
+        key = (root, idx, to_text(payee), to_text(card_raw), to_text(card_time))
+        if key in seen:
+            continue
+        seen.add(key)
+        if has_meaningful_value(payee) or has_meaningful_value(card_raw) or has_meaningful_value(card_time):
+            sources.append({
+                **_source_entry(payee, f'{root}[{idx}]', 'payeeName', source_group, dtype, row.get('sourceFileName') or row.get('fileName'), raw),
+                'payeeName': to_text(payee),
+                'cardAmount': parse_amount(card_raw),
+                'cardAmountRaw': card_raw,
+                'cardTime': to_text(card_time),
+            })
+    return sources
+
+
+def collect_fee_structure_sources(context):
+    return {
+        'accommodationAmount': collect_amount_sources(context, ['accommodationAmount', 'ZSF']),
+        'mealAmount': collect_amount_sources(context, ['mealAmount', 'HSF']),
+        'venueRentAmount': collect_amount_sources(context, ['venueRentAmount', 'venueAmount', 'CDF']),
+        'totalAmount': collect_amount_sources(context, ['SQ_JE', 'invoiceAmount', 'applyAmount', 'totalAmount']),
+    }
+
+
+def detect_conflicts(sources, field_name, normalize_func=None):
+    values = []
+    for source in sources or []:
+        raw = source.get(field_name)
+        if raw is None:
+            raw = source.get('value')
+        value = normalize_func(raw) if normalize_func else raw
+        if value in (None, ''):
+            continue
+        values.append((value, source))
+    normalized = {to_text(value) for value, _ in values}
+    return {'hasConflict': len(normalized) > 1, 'values': values, 'sources': [source for _, source in values]}
+
+
+def pick_high_risk_amount(sources):
+    valid = [source for source in (sources or []) if source.get('amount') is not None]
+    if not valid:
+        return {'value': 0, 'hasValue': False, 'sources': sources or []}
+    best = max(valid, key=lambda item: item.get('amount') or 0)
+    return {'value': best.get('amount'), 'hasValue': True, 'source': best.get('source'), 'raw': best.get('value'), 'sources': valid}
+
+
+def build_conflict_evidence(field_name, sources):
+    return {
+        'field': field_name,
+        'sources': [
+            build_evidence(
+                value=source.get('value'),
+                amount=source.get('amount'),
+                days=source.get('days'),
+                source=source.get('source'),
+                sourceGroup=source.get('sourceGroup'),
+                docType=source.get('docType'),
+                fileName=source.get('fileName'),
+                rawText=to_text(source.get('rawText'))[:120],
+            )
+            for source in (sources or [])
+        ],
+    }
+
+
 def get_amount(data, paths, default=0):
     return to_number(get_nested(data, paths, default), default)
 
@@ -331,17 +682,29 @@ def get_summary_amount(data, field, default=0):
 
 
 def get_summary_amount_info(data, field):
-    s = summary(data)
-    if field in s:
-        value = parse_amount(s.get(field))
-        has_evidence = bool(evidence_map(data).get(field))
-        has_value = value is not None and (abs(value) > EPSILON or has_evidence)
-        return {'value': value if value is not None else 0, 'hasValue': has_value, 'source': f'summary.{field}', 'raw': s.get(field)}
-    page = get_page_fields(data)
-    if field in page:
-        value = parse_amount(page.get(field))
-        return {'value': value if value is not None else 0, 'hasValue': value is not None, 'source': f'summary.pageFields.{field}', 'raw': page.get(field)}
-    return {'value': 0, 'hasValue': False, 'source': '', 'raw': ''}
+    field_aliases = {
+        'mealAmount': ['mealAmount', 'HSF'],
+        'accommodationAmount': ['accommodationAmount', 'ZSF'],
+        'venueRentAmount': ['venueRentAmount', 'venueAmount', 'CDF'],
+        'invoiceAmount': ['SQ_JE', 'invoiceAmount', 'applyAmount', 'totalAmount'],
+    }
+    sources = collect_amount_sources(data, field_aliases.get(field, [field]))
+    valid = [source for source in sources if source.get('amount') is not None]
+    if not valid:
+        return {'value': 0, 'hasValue': False, 'source': '', 'raw': '', 'sources': sources}
+    page_valid = [source for source in valid if source.get('sourceGroup') == 'page']
+    best = max(page_valid or valid, key=lambda item: item.get('amount') or 0)
+    all_values = {round(source.get('amount') or 0, 2) for source in valid}
+    has_evidence = bool(evidence_map(data).get(field))
+    return {
+        'value': best.get('amount') if best.get('amount') is not None else 0,
+        'hasValue': bool(valid) and (abs(best.get('amount') or 0) > EPSILON or has_evidence or best.get('amount') == 0),
+        'source': best.get('source'),
+        'raw': best.get('value'),
+        'sources': valid,
+        'hasConflict': len(all_values) > 1,
+        'highRiskValue': max(source.get('amount') or 0 for source in valid),
+    }
 
 
 def is_zero_or_blank(value):
@@ -471,36 +834,57 @@ def meeting_days(data):
 
 
 def meeting_days_info(data):
-    s = summary(data)
-    page_days = to_number(get_page_fields(data).get('meetingDays'), 0)
-    if page_days:
-        return {'days': page_days, 'source': 'summary.pageFields.meetingDays', 'evidence': build_evidence(days=page_days)}
-    explicit = to_number(s.get('meetingDays'), 0)
-    if explicit:
-        calculated = date_diff_days(s.get('startDate'), s.get('endDate'))
-        evidence = build_evidence(days=explicit, calculatedDays=calculated, startDate=s.get('startDate'), endDate=s.get('endDate'))
-        return {'days': explicit, 'source': 'summary.meetingDays', 'evidence': evidence}
-    days = date_diff_days(s.get('startDate') or s.get('meetingDate'), s.get('endDate'))
-    if days:
-        return {'days': days, 'source': 'summary.startDate/endDate', 'evidence': build_evidence(days=days, startDate=s.get('startDate'), endDate=s.get('endDate'), meetingDate=s.get('meetingDate'))}
-    start, end = parse_date_range_text(s.get('meetingDate'))
-    days = len(date_range(start.isoformat(), end.isoformat())) if start and end else 0
-    return {'days': days, 'source': 'summary.meetingDate' if days else '', 'evidence': build_evidence(days=days, meetingDate=s.get('meetingDate'))}
+    sources = [source for source in collect_date_sources(data) if source.get('days')]
+    if not sources:
+        return {'days': 0, 'source': '', 'evidence': {}}
+    best = max(sources, key=lambda item: item.get('days') or 0)
+    values = {source.get('days') for source in sources}
+    return {
+        'days': best.get('days'),
+        'source': best.get('source'),
+        'hasConflict': len(values) > 1,
+        'sources': sources,
+        'evidence': build_evidence(days=best.get('days'), source=best.get('source'), conflict=len(values) > 1, sources=build_conflict_evidence('meetingDays', sources).get('sources')),
+    }
 
 
 def invoice_amount(data):
-    s = summary(data)
-    value = to_number(s.get('invoiceAmount'), 0)
-    if value:
-        return value
+    info = invoice_amount_info(data)
+    return info.get('value', 0)
+
+
+def invoice_amount_info(data):
+    page_sources = collect_amount_sources(data, ['SQ_JE', 'invoiceAmount', 'applyAmount', 'totalAmount'])
+    page_sources = [source for source in page_sources if source.get('sourceGroup') == 'page' and source.get('amount') is not None]
+    invoice_sources = []
     total = 0
     seen = set()
     for idx, item in enumerate(ocr_items(data)):
-        if doc_type(item) != 'normalInvoice':
+        if doc_type(item) not in ('normalInvoice', 'meetingSettlement'):
             continue
         key = to_text(item.get('invoiceNumber') or item.get('invoiceNo')) or f'idx:{idx}'
+        amount = parse_amount(item.get('totalAmount') or item.get('invoiceAmount') or item.get('amount'))
+        if amount is None:
+            continue
+        source = {
+            **_source_entry(item.get('totalAmount') or item.get('invoiceAmount') or item.get('amount'), f'ocrItems[{idx}].totalAmount', 'totalAmount', 'ocr', doc_type(item), item.get('sourceFileName') or item.get('fileName'), item.get('rawText')),
+            'amount': amount,
+            'hasValue': True,
+        }
+        invoice_sources.append(source)
+        if doc_type(item) != 'normalInvoice':
+            continue
         if key in seen:
             continue
         seen.add(key)
-        total += to_number(item.get('totalAmount') or item.get('invoiceAmount') or item.get('amount'), 0)
-    return total
+        total += amount
+    sources = list(page_sources)
+    if total > EPSILON:
+        sources.append({**_source_entry(total, 'ocr.normalInvoice.dedupTotal', 'invoiceAmount', 'ocr'), 'amount': total, 'hasValue': True})
+    sources.extend([source for source in invoice_sources if source.get('docType') == 'meetingSettlement'])
+    valid = [source for source in sources if source.get('amount') is not None]
+    if not valid:
+        return {'value': 0, 'hasValue': False, 'sources': sources, 'hasConflict': False}
+    best = max(valid, key=lambda item: item.get('amount') or 0)
+    values = {round(source.get('amount') or 0, 2) for source in valid}
+    return {'value': best.get('amount'), 'hasValue': True, 'source': best.get('source'), 'raw': best.get('value'), 'sources': valid, 'hasConflict': len(values) > 1}

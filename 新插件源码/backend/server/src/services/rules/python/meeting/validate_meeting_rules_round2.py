@@ -72,8 +72,10 @@ def validate_markdown_shape(text):
             if pattern in line:
                 raise ValueError(f'报告 Markdown 第 {line_no} 行存在拼接内容：{pattern}')
     problem_lines = [line for line in lines if line.startswith('| P')]
-    if len(problem_lines) != 17:
-        raise ValueError(f'报告问题清单数量异常：{len(problem_lines)}')
+    if problem_lines:
+        numbers = [int(line.split('|', 2)[1].strip()[1:]) for line in problem_lines]
+        if numbers != list(range(1, len(numbers) + 1)):
+            raise ValueError(f'报告问题清单编号异常：{numbers}')
 
 
 def ctx(summary=None, ocr_items=None, evidence=None):
