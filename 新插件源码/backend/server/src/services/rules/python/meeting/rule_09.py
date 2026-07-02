@@ -1,7 +1,7 @@
 import pathlib
 import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from meeting_common import attendee_count_info, get_summary_amount_info, make_pass, make_skip, recognized_meeting_category, meeting_days_info, issue, result, build_evidence, category_evidence
+from meeting_common import attendee_count_info, get_summary_amount_info, make_pass, make_skip, recognized_meeting_category, meeting_days_info, issue, result, build_evidence, category_evidence, build_conflict_evidence
 
 RULE_META = {'id': 'rule_09', 'name': '伙食费住宿费分项标准审核', 'category': '分项标准', 'level': 'warning'}
 STANDARDS = {'二类': {'meal': 150, 'accommodation': 400}, '三类': {'meal': 130, 'accommodation': 340}}
@@ -14,8 +14,8 @@ def evaluate(context):
     days = day_info.get('days')
     meal_info = get_summary_amount_info(context, 'mealAmount')
     accommodation_info = get_summary_amount_info(context, 'accommodationAmount')
-    meal = meal_info.get('value')
-    accommodation = accommodation_info.get('value')
+    meal = meal_info.get('highRiskValue') if meal_info.get('hasConflict') else meal_info.get('value')
+    accommodation = accommodation_info.get('highRiskValue') if accommodation_info.get('hasConflict') else accommodation_info.get('value')
     if category not in STANDARDS:
         return make_skip('rule_09', RULE_META['name'], '二类或三类会议类别字段（规则清单未给出四类分项标准）', build_evidence(category=category, categoryEvidence=category_evidence(context)))
     if not count or not days:
@@ -27,9 +27,13 @@ def evaluate(context):
     if not meal_info.get('hasValue') and not accommodation_info.get('hasValue'):
         return make_skip('rule_09', RULE_META['name'], '伙食费或住宿费字段', build_evidence(category=category, attendeeCount=count, days=days))
     if meal_info.get('hasValue') and meal - meal_limit > 0.01:
-        issues.append(issue(RULE_META['name'], f'{category}会议伙食费 {meal:.2f} 元大于标准 {meal_limit:.2f} 元。', '请核对伙食费、人天数和会议类别。', 'error', build_evidence(item='meal', amount=meal, source=meal_info.get('source'), limit=meal_limit, formula='人数×天数×伙食标准')))
+        prefix = '页面/OCR伙食费存在冲突，按高风险金额判断：' if meal_info.get('hasConflict') else ''
+        issues.append(issue(RULE_META['name'], f'{prefix}{category}会议伙食费 {meal:.2f} 元大于标准 {meal_limit:.2f} 元。', '请核对伙食费、人天数和会议类别。', 'error', build_evidence(item='meal', amount=meal, source=meal_info.get('source'), limit=meal_limit, formula='人数×天数×伙食标准', amountEvidence=build_conflict_evidence('mealAmount', meal_info.get('sources')))))
     if accommodation_info.get('hasValue') and accommodation - accommodation_limit > 0.01:
-        issues.append(issue(RULE_META['name'], f'{category}会议住宿费 {accommodation:.2f} 元大于标准 {accommodation_limit:.2f} 元。', '请核对住宿费、人天数和会议类别。', 'error', build_evidence(item='accommodation', amount=accommodation, source=accommodation_info.get('source'), limit=accommodation_limit, formula='人数×天数×住宿标准')))
+        prefix = '页面/OCR住宿费存在冲突，按高风险金额判断：' if accommodation_info.get('hasConflict') else ''
+        issues.append(issue(RULE_META['name'], f'{prefix}{category}会议住宿费 {accommodation:.2f} 元大于标准 {accommodation_limit:.2f} 元。', '请核对住宿费、人天数和会议类别。', 'error', build_evidence(item='accommodation', amount=accommodation, source=accommodation_info.get('source'), limit=accommodation_limit, formula='人数×天数×住宿标准', amountEvidence=build_conflict_evidence('accommodationAmount', accommodation_info.get('sources')))))
+    if not issues and (meal_info.get('hasConflict') or accommodation_info.get('hasConflict')):
+        issues.append(issue(RULE_META['name'], '页面/OCR分项金额存在冲突，需人工复核伙食费或住宿费来源。', '请核对页面分项金额、结算单和发票明细是否一致。', 'warning', build_evidence(mealEvidence=build_conflict_evidence('mealAmount', meal_info.get('sources')), accommodationEvidence=build_conflict_evidence('accommodationAmount', accommodation_info.get('sources')))))
     if issues:
         return result('rule_09', RULE_META['name'], False, f'发现 {len(issues)} 个分项标准提示。', issues)
     return make_pass('rule_09', RULE_META['name'], '伙食费、住宿费未超过规则清单给出的分项标准。')

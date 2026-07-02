@@ -16,5 +16,8 @@ def evaluate(context):
         return make_skip('rule_06', RULE_META['name'], '会议天数字段', build_evidence(category=category))
     limit = LIMITS[category]
     if days > limit:
-        return make_fail('rule_06', RULE_META['name'], f'{category}会议天数 {days} 天，大于规定上限 {limit} 天。', '请核对会议通知时间、报到返程安排及天数计算口径。', build_evidence(category=category, days=days, source=day_info.get('source'), limit=limit, dayEvidence=day_info.get('evidence')))
+        prefix = '页面/OCR日期或天数存在冲突，按高风险天数判断：' if day_info.get('hasConflict') else ''
+        return make_fail('rule_06', RULE_META['name'], f'{prefix}{category}会议天数 {days} 天，大于规定上限 {limit} 天。', '请核对会议通知时间、报到返程安排及天数计算口径。', build_evidence(category=category, days=days, source=day_info.get('source'), limit=limit, dayEvidence=day_info.get('evidence')))
+    if day_info.get('hasConflict'):
+        return make_fail('rule_06', RULE_META['name'], f'页面/OCR日期或天数存在冲突，需人工复核会议天数；当前高风险天数 {days} 天未超过上限 {limit} 天。', '请核对页面会议天数与会议通知、计划、审批 OCR 日期是否一致。', build_evidence(category=category, days=days, source=day_info.get('source'), limit=limit, dayEvidence=day_info.get('evidence')))
     return make_pass('rule_06', RULE_META['name'], f'{category}会议天数 {days} 天未超过上限 {limit} 天。')

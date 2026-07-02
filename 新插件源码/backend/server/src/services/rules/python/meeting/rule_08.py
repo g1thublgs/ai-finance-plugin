@@ -1,7 +1,7 @@
 import pathlib
 import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from meeting_common import attendee_count_info, invoice_amount, make_fail, make_pass, make_skip, meeting_days_info, recognized_meeting_category, category_evidence, build_evidence
+from meeting_common import attendee_count_info, invoice_amount_info, make_fail, make_pass, make_skip, meeting_days_info, recognized_meeting_category, category_evidence, build_evidence, build_conflict_evidence
 
 RULE_META = {'id': 'rule_08', 'name': '会议费综合定额超标准提示', 'category': '综合定额', 'level': 'warning'}
 STANDARDS = {'二类': 650, '三类': 550, '四类': 550}
@@ -12,7 +12,8 @@ def evaluate(context):
     day_info = meeting_days_info(context)
     count = count_info.get('count')
     days = day_info.get('days')
-    amount = invoice_amount(context)
+    amount_info = invoice_amount_info(context)
+    amount = amount_info.get('value')
     if not category:
         return make_skip('rule_08', RULE_META['name'], '可识别的会议类别字段，无法判断会议费综合定额标准', build_evidence(attendeeCount=count, days=days, invoiceAmount=amount, categoryEvidence=category_evidence(context)))
     if not count or not days or not amount:
@@ -20,5 +21,8 @@ def evaluate(context):
     standard = STANDARDS[category]
     limit = count * days * standard
     if amount - limit > 0.01:
-        return make_fail('rule_08', RULE_META['name'], f'发票汇总金额 {amount:.2f} 元大于定额标准 {limit:.2f} 元。', '请核对发票金额、签到人数、会议天数和会议类别。', build_evidence(category=category, attendeeCount=count, attendeeSource=count_info.get('source'), days=days, daySource=day_info.get('source'), standard=standard, formula='签到人数×会议天数×标准', limit=limit, invoiceAmount=amount))
+        prefix = '页面/OCR金额存在冲突，按高风险金额判断：' if amount_info.get('hasConflict') else ''
+        return make_fail('rule_08', RULE_META['name'], f'{prefix}发票汇总金额 {amount:.2f} 元大于定额标准 {limit:.2f} 元。', '请核对发票金额、签到人数、会议天数和会议类别。', build_evidence(category=category, attendeeCount=count, attendeeSource=count_info.get('source'), days=days, daySource=day_info.get('source'), standard=standard, formula='签到人数×会议天数×标准', limit=limit, invoiceAmount=amount, amountEvidence=build_conflict_evidence('invoiceAmount', amount_info.get('sources'))))
+    if amount_info.get('hasConflict'):
+        return make_fail('rule_08', RULE_META['name'], f'页面/OCR金额存在冲突，需人工复核；当前高风险金额 {amount:.2f} 元未超过定额标准 {limit:.2f} 元。', '请核对页面金额、发票金额和结算单金额是否一致。', build_evidence(category=category, attendeeCount=count, days=days, limit=limit, invoiceAmount=amount, amountEvidence=build_conflict_evidence('invoiceAmount', amount_info.get('sources'))))
     return make_pass('rule_08', RULE_META['name'], f'发票汇总金额未超过定额标准 {limit:.2f} 元。')
