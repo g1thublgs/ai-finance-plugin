@@ -10,6 +10,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 BACKEND = HERE.parents[5]
 REPO = HERE.parents[7]
 REPORT = REPO / '会议费审核第二轮测试验证报告.md'
+
 sys.path.insert(0, str(HERE))
 
 HIDDEN_UNICODE_CHARS = {
