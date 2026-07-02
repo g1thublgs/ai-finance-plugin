@@ -40,8 +40,25 @@ function parseDate(value) {
 function parseDateRange(value) {
     const text = cleanText(value);
     if (!text) return { startDate: '', endDate: '' };
+    const fullRange = text.match(/(\d{4})[年\-/.](\d{1,2})[月\-/.](\d{1,2})日?\s*(?:至|到|—|~)\s*(\d{4})[年\-/.](\d{1,2})[月\-/.](\d{1,2})日?/);
+    if (fullRange) {
+        return {
+            startDate: `${fullRange[1]}-${fullRange[2].padStart(2, '0')}-${fullRange[3].padStart(2, '0')}`,
+            endDate: `${fullRange[4]}-${fullRange[5].padStart(2, '0')}-${fullRange[6].padStart(2, '0')}`,
+        };
+    }
+    const partial = text.match(/(\d{4})年(\d{1,2})月(\d{1,2})日?\s*(?:至|到|-|—|~)\s*(?:(\d{4})年)?(?:(\d{1,2})月)?(\d{1,2})日?/);
+    if (partial) {
+        const year = partial[1];
+        const endYear = partial[4] || year;
+        const endMonth = partial[5] || partial[2];
+        return {
+            startDate: `${year}-${partial[2].padStart(2, '0')}-${partial[3].padStart(2, '0')}`,
+            endDate: `${endYear}-${endMonth.padStart(2, '0')}-${partial[6].padStart(2, '0')}`,
+        };
+    }
     const full = [...text.matchAll(/(\d{4})[年\-/.](\d{1,2})[月\-/.](\d{1,2})日?/g)];
-    if (full.length) {
+    if (full.length >= 2) {
         const first = full[0];
         const last = full[full.length - 1];
         return {
@@ -49,15 +66,12 @@ function parseDateRange(value) {
             endDate: `${last[1]}-${last[2].padStart(2, '0')}-${last[3].padStart(2, '0')}`,
         };
     }
-    const partial = text.match(/(\d{4})年(\d{1,2})月(\d{1,2})日?\s*(?:至|到|-|—|~)\s*(?:(\d{4})年)?(?:(\d{1,2})月)?(\d{1,2})日?/);
-    if (!partial) return { startDate: parseDate(text), endDate: '' };
-    const year = partial[1];
-    const endYear = partial[4] || year;
-    const endMonth = partial[5] || partial[2];
-    return {
-        startDate: `${year}-${partial[2].padStart(2, '0')}-${partial[3].padStart(2, '0')}`,
-        endDate: `${endYear}-${endMonth.padStart(2, '0')}-${partial[6].padStart(2, '0')}`,
-    };
+    if (full.length === 1) {
+        const first = full[0];
+        const single = `${first[1]}-${first[2].padStart(2, '0')}-${first[3].padStart(2, '0')}`;
+        return { startDate: single, endDate: single };
+    }
+    return { startDate: parseDate(text), endDate: '' };
 }
 
 function safeArray(value) {
