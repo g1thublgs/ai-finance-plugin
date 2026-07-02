@@ -12,9 +12,30 @@ REPO = HERE.parents[7]
 REPORT = REPO / '会议费审核第二轮测试验证报告.md'
 sys.path.insert(0, str(HERE))
 
+HIDDEN_UNICODE_CHARS = {
+    '\ufeff',
+    '\u200b',
+    '\u200c',
+    '\u200d',
+    '\u2060',
+    '\u202a',
+    '\u202b',
+    '\u202c',
+    '\u202d',
+    '\u202e',
+    '\u2066',
+    '\u2067',
+    '\u2068',
+    '\u2069',
+}
+
 
 def load_rule(rule_no):
     return importlib.import_module(f'rule_{rule_no:02d}')
+
+
+def clean_hidden_unicode(text):
+    return ''.join(ch for ch in text if ch not in HIDDEN_UNICODE_CHARS)
 
 
 def ctx(summary=None, ocr_items=None, evidence=None):
@@ -419,7 +440,8 @@ def main():
     ]
     cases = make_cases()
     results = run_cases(cases)
-    REPORT.write_text(build_report(results, command_results), encoding='utf-8')
+    report_text = clean_hidden_unicode(build_report(results, command_results))
+    REPORT.write_text(report_text, encoding='utf-8')
     print(json.dumps({
         'cases': len(results),
         'passed': sum(1 for item in results if item['casePassed']),
